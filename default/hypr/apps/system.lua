@@ -42,3 +42,14 @@ o.window({ tag = "pop" }, { rounding = 8 })
 
 -- Prevent idle while open.
 o.window({ tag = "noidle" }, { idle_inhibit = "always" })
+
+-- The image picker uses a normal window so closing it releases keyboard focus.
+-- Keep its carousel presentation free of window borders and backdrop effects.
+o.window({ class = "^org.quickshell$", title = "^Omarchy Wallpaper Selector.*$" }, {
+  float = true,
+  center = true,
+  border_size = 0,
+  decorate = false,
+  no_blur = true,
+  no_shadow = true,
+})

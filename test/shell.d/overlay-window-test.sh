@@ -133,7 +133,6 @@ const overlays = {
   'shell/plugins/osd/Osd.qml': 'shown: root.opened',
   'shell/plugins/reminders/ReminderFlow.qml': 'shown: root.opened',
   'shell/plugins/panels/wifiqr/Panel.qml': 'shown: root.opened',
-  'shell/plugins/image-picker/ImagePicker.qml': 'shown: root.opened',
 }
 for (const [file, shown] of Object.entries(overlays)) {
   const qml = read(file)
@@ -142,6 +141,11 @@ for (const [file, shown] of Object.entries(overlays)) {
     `${file} uses the shared overlay scale and lifecycle handling`
   )
 }
+
+// Unlike transient layer-shell popups, the image picker uses an xdg toplevel
+// to return keyboard focus through the compositor's normal window lifecycle.
+const pickerQml = read('shell/plugins/image-picker/ImagePicker.qml')
+assert(pickerQml.includes('FloatingWindow {') && pickerQml.includes('visible: root.opened') && !pickerQml.includes('WlrKeyboardFocus.Exclusive'), 'the image picker does not retain an exclusive overlay keyboard grab')
 
 // Layout resets on a requested close, independent of mapping readiness.
 const menuQml = read('shell/plugins/menu/Menu.qml')

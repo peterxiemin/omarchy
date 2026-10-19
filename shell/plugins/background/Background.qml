@@ -212,8 +212,8 @@ Item {
     if (!bgSwitchProc.running) bgSwitchProc.running = true
   }
 
-  function openThemeSwitcher() {
-    var payload = JSON.stringify({ source: "themes" })
+  function openThemeSwitcher(screenName) {
+    var payload = JSON.stringify({ source: "themes", screenName: screenName || "" })
 
     // A cloned background may not summon the picker in-process, so it takes
     // the IPC route instead.
@@ -513,7 +513,7 @@ Item {
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         onDoubleClicked: function(mouse) {
-          if (mouse.button === Qt.RightButton) root.openThemeSwitcher()
+          if (mouse.button === Qt.RightButton) root.openThemeSwitcher(panel.screen.name)
           else root.openSelector()
           mouse.accepted = true
         }

@@ -7,10 +7,18 @@ const fs = require('fs')
 const backgroundQml = fs.readFileSync(path.join(root, 'shell/plugins/background/Background.qml'), 'utf8')
 
 assert(
-  /function openThemeSwitcher\(\) \{[\s\S]*if \(!root\.shell \|\| !root\.shell\.summon\("omarchy\.image-picker", payload\)\)\s*Util\.execArgv\(\["omarchy-shell", "shell", "summon", "omarchy\.image-picker", payload\]\)/.test(backgroundQml) &&
+  /function openThemeSwitcher\(screenName\) \{[\s\S]*if \(!root\.shell \|\| !root\.shell\.summon\("omarchy\.image-picker", payload\)\)\s*Util\.execArgv\(\["omarchy-shell", "shell", "summon", "omarchy\.image-picker", payload\]\)/.test(backgroundQml) &&
     !backgroundQml.includes('omarchy-theme-switcher'),
   'background opens the in-shell theme picker instead of spawning the switcher script'
 )
+
+const openTheme = backgroundQml.match(/function openThemeSwitcher\(screenName\) \{[\s\S]*?\n  \}/)[0]
+const ctx = { root: { shell: null }, Util: { execArgv(argv) { ctx.argv = argv } } }
+require('vm').runInNewContext(openTheme, ctx)
+ctx.openThemeSwitcher('HDMI-A-1')
+assertDeepEqual(JSON.parse(ctx.argv[4]), { source: 'themes', screenName: 'HDMI-A-1' }, 'theme picker receives the clicked output rather than guessing the active window monitor')
+ctx.openThemeSwitcher()
+assertEqual(JSON.parse(ctx.argv[4]).screenName, '', 'callers without an output retain the picker default')
 
 assert(
   backgroundQml.includes('pendingThemeFallbackTimer.restart()') &&

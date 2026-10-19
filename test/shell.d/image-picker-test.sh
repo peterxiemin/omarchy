@@ -133,7 +133,7 @@ assert(
   'image picker refreshes theme rows from the theme switcher'
 )
 assert(
-  /if \(themeMode\) \{[\s\S]*Util\.execArgv\(\["omarchy-theme-set", nameForPath\(path\)\]\)/.test(imagePickerQml),
+  /root\.pendingTheme = path \? nameForPath\(path\) : ""/.test(imagePickerQml),
   'image picker applies a chosen theme itself'
 )
 assert(
@@ -146,8 +146,8 @@ assert(
   'image picker leaves theme mode when another caller opens it'
 )
 assert(
-  /OverlayWindow \{\s*id: panel\s*shown: root\.opened\s*shownKeyboardFocus: root\.imagesLoaded \? WlrKeyboardFocus\.Exclusive : WlrKeyboardFocus\.None/.test(imagePickerQml),
-  'image picker uses OverlayWindow and takes the keyboard once images load'
+  /FloatingWindow \{\s*id: panel/.test(imagePickerQml) && !imagePickerQml.includes("WlrKeyboardFocus.Exclusive"),
+  'image picker uses a normal window without an exclusive layer-shell keyboard grab'
 )
 assert(
   /model: visibleImages/.test(imagePickerQml) &&
@@ -286,7 +286,7 @@ assert(
   'image picker routes keys to the delete confirmation first and maps Delete to it'
 )
 assert(
-  /onOpenedChanged: if \(!opened\) \{ layoutSettled = false; renderedFrames = 0; deleteConfirmOpen = false; pendingDeleteTheme = ""; deleteSelectionPath = ""; awaitingDeleteRefresh = false \}/.test(imagePickerQml) &&
+  /onOpenedChanged: \{[\s\S]*?layoutSettled = false\s*renderedFrames = 0\s*deleteConfirmOpen = false\s*pendingDeleteTheme = ""\s*deleteSelectionPath = ""\s*awaitingDeleteRefresh = false/.test(imagePickerQml) &&
     /id: deleteThemeProc\s*onExited: function\(exitCode\) \{\s*if \(exitCode === 0\) root\.awaitingDeleteRefresh = true\s*else root\.deleteSelectionPath = ""\s*root\.refreshExtraThemes\(\)\s*root\.refreshThemeRows\(\)/.test(imagePickerQml),
   'image picker drops a pending deletion on close and refreshes after one runs'
 )
@@ -477,11 +477,53 @@ application.applySelected()
 assert(application.applied === undefined && application.opened, 'Enter cannot apply a deleted theme before rows reload')
 application = applyContext(false)
 application.applySelected()
-assertDeepEqual(application.applied, ['omarchy-theme-set', 'fjord'], 'Enter applies the selected theme once no deletion is pending')
+assertEqual(application.pendingTheme, 'fjord', 'Enter queues the selected theme once no deletion is pending')
+assert(!application.opened && application.applied === undefined, 'the picker closes before starting the theme command')
 
 updateCtx.awaitingDeleteRefresh = true
 updateCtx.deleteSelectionPath = '/p/alpha.png'
 updateCtx.themeRows = 'new-rows'
 updateCtx.updateThemeRows('after-delete-rows')
 assertEqual(updateCtx.awaitingDeleteRefresh, false, 'the post-delete refresh loading rows releases the apply guard')
+// Execute the actual text-input key handler: a candidate commit must never
+// apply a theme, and candidate arrows must not move the carousel.
+const searchBlock = imagePickerQml.slice(imagePickerQml.indexOf('id: searchInput'))
+const searchHandler = searchBlock.match(/Keys.onPressed: function\(event\) \{([\s\S]*?)\n          \}/)[1]
+const searchContext = {
+  inputMethodComposing: true, text: '',
+  Qt: { Key_Return: 1, Key_Left: 2, Key_Right: 3, Key_Delete: 4 },
+  forwarded: [],
+}
+searchContext.carousel = { handlePickerKey(event) { searchContext.forwarded.push(event.key) } }
+const vm = require('vm')
+vm.runInNewContext('function handleSearch(event) {' + searchHandler + '}', searchContext)
+for (const key of [1, 2, 3, 4]) searchContext.handleSearch({ key })
+assertDeepEqual(searchContext.forwarded, [], 'IME composition owns candidate commit and navigation keys')
+searchContext.inputMethodComposing = false
+searchContext.handleSearch({ key: 1 })
+assertDeepEqual(searchContext.forwarded, [1], 'Enter reaches the picker outside composition')
+searchContext.text = '中文'
+searchContext.handleSearch({ key: 4 })
+assertDeepEqual(searchContext.forwarded, [1], 'Delete edits a nonempty query instead of deleting a theme')
+searchContext.text = ''
+searchContext.handleSearch({ key: 4 })
+assertDeepEqual(searchContext.forwarded, [1, 4], 'Delete still reaches theme removal when the query is empty')
+assertEqual((imagePickerQml.match(/onOpenedChanged:/g) || []).length, 1, 'picker has a single close lifecycle handler')
+const openedHandler = imagePickerQml.match(/onOpenedChanged: \{([\s\S]*?)\n  \}/)[1]
+const lifecycle = {
+  opened: false, layoutSettled: true, renderedFrames: 2,
+  deleteConfirmOpen: true, pendingDeleteTheme: 'old', deleteSelectionPath: '/old', awaitingDeleteRefresh: true,
+  searchInput: { focus: true }, calls: [],
+}
+lifecycle.Qt = { inputMethod: { reset() { lifecycle.calls.push('reset') }, hide() { lifecycle.calls.push('hide') } } }
+lifecycle.finishClose = { restart() { lifecycle.calls.push('defer') }, stop() { lifecycle.calls.push('stop') } }
+vm.runInNewContext('function changed() {' + openedHandler + '}', lifecycle)
+lifecycle.changed()
+assert(!lifecycle.searchInput.focus && !lifecycle.deleteConfirmOpen, 'closing clears text focus and pending deletion')
+assertDeepEqual(lifecycle.calls, ['reset', 'hide', 'defer'], 'closing releases composition before deferring the theme command')
+lifecycle.opened = true
+lifecycle.pendingTheme = 'stale'
+lifecycle.changed()
+assertEqual(lifecycle.pendingTheme, '', 'reopening drops a stale deferred theme selection')
+
 JS

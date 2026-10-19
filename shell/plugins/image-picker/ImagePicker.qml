@@ -1,5 +1,6 @@
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 import Quickshell.Wayland
 import QtQuick
 import QtQuick.Effects
@@ -23,7 +24,36 @@ Item {
   property string selectedImage: Quickshell.env("OMARCHY_IMAGE_SELECTOR_SELECTED")
   property int selectedIndex: 0
   property bool imagesLoaded: false
+  property string requestedScreenName: ""
+  property string pendingTheme: ""
   property bool opened: false
+  onOpenedChanged: {
+    if (opened) {
+      finishClose.stop()
+      pendingTheme = ""
+    } else {
+      layoutSettled = false
+      renderedFrames = 0
+      deleteConfirmOpen = false
+      pendingDeleteTheme = ""
+      deleteSelectionPath = ""
+      awaitingDeleteRefresh = false
+      Qt.inputMethod.reset()
+      searchInput.focus = false
+      Qt.inputMethod.hide()
+      finishClose.restart()
+    }
+  }
+  Timer {
+    id: finishClose
+    interval: 150
+    onTriggered: {
+      if (root.opened || !root.pendingTheme) return
+      var theme = root.pendingTheme
+      root.pendingTheme = ""
+      Util.execArgv(["omarchy-theme-set", theme])
+    }
+  }
   property bool showLabels: false
   property bool filterable: false
   property bool layoutSettled: false
@@ -66,7 +96,6 @@ Item {
   readonly property int previewRadius: Math.max(1, Math.min(16, Math.ceil((panel.width - expandedWidth) / (2 * (sliceWidth + sliceSpacing))) + 1))
   onPreviewRadiusChanged: updateVisibleItems()
 
-  onOpenedChanged: if (!opened) { layoutSettled = false; renderedFrames = 0; deleteConfirmOpen = false; pendingDeleteTheme = ""; deleteSelectionPath = ""; awaitingDeleteRefresh = false }
 
   PreviewHold {
     id: previewHold
@@ -81,7 +110,7 @@ Item {
 
   function focusPicker() {
     if (root.opened && root.imagesLoaded && root.layoutSettled)
-      carousel.forceActiveFocus()
+      (filterable ? searchInput : carousel).forceActiveFocus()
   }
 
   function revealWhenSettled(serial) {
@@ -199,8 +228,8 @@ Item {
 
     if (themeMode) {
       themeMode = false
+      root.pendingTheme = path ? nameForPath(path) : ""
       root.opened = false
-      if (path) Util.execArgv(["omarchy-theme-set", nameForPath(path)])
       return
     }
 
@@ -573,6 +602,7 @@ Item {
     if (payload) {
       try { args = JSON.parse(payload) || {} } catch (e) { args = {} }
     }
+    requestedScreenName = String(args.screenName || (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""))
     if (args.source === "themes") {
       openThemes()
       return
@@ -628,11 +658,21 @@ Item {
     onExited: root.releaseNextDoneFile()
   }
 
-  OverlayWindow {
+  FloatingWindow {
     id: panel
-    shown: root.opened
-    shownKeyboardFocus: root.imagesLoaded ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
-    WlrLayershell.namespace: "omarchy-image-selector"
+    title: "Omarchy Wallpaper Selector - " + root.requestedScreenName
+    screen: {
+      for (var output of Quickshell.screens) {
+        if (output.name === root.requestedScreenName) return output
+      }
+      return Quickshell.screens.length ? Quickshell.screens[0] : null
+    }
+    visible: root.opened
+    color: "transparent"
+    implicitWidth: 1400
+    implicitHeight: 720
+    minimumSize: Qt.size(900, 650)
+    onVisibleChanged: if (!visible && root.opened) root.cancel()
 
     MouseArea {
       anchors.fill: parent
@@ -684,7 +724,8 @@ Item {
           readonly property bool mirrored: LayoutMirroring.enabled
 
           Keys.priority: Keys.BeforeItem
-          Keys.onPressed: function(event) {
+          Keys.onPressed: function(event) { handlePickerKey(event) }
+          function handlePickerKey(event) {
             if (root.deleteConfirmOpen) {
               if (deleteConfirm.handleKey(event)) event.accepted = true
               return
@@ -711,22 +752,16 @@ Item {
             } else if (event.key === Qt.Key_Delete && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))) {
               root.requestDeleteSelectedTheme()
               event.accepted = true
-            } else if (root.filterable && Util.editsFilter(event, root.filterText)) {
-              root.updateFilter(Util.editedFilter(event, root.filterText))
-              event.accepted = true
             } else if (Util.readingKey(event) === Qt.Key_Left || (event.key === Qt.Key_Tab && event.modifiers & Qt.ShiftModifier) || event.key === Qt.Key_Backtab) {
               root.selectAdjacent(-1)
               event.accepted = true
             } else if (Util.readingKey(event) === Qt.Key_Right || event.key === Qt.Key_Tab) {
               root.selectAdjacent(1)
               event.accepted = true
-            } else if (root.filterable && event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127 && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)) {
-              root.updateFilter(root.filterText + event.text)
-              event.accepted = true
             }
           }
 
-          Component.onCompleted: forceActiveFocus()
+          Component.onCompleted: root.focusPicker()
 
           Repeater {
             id: imageCards
@@ -869,21 +904,29 @@ Item {
           elide: Text.ElideRight
         }
 
-        Text {
-          textFormat: Text.PlainText
-          visible: root.filterable && root.filterText
+        TextInput {
+          id: searchInput
+          enabled: root.opened
+          visible: root.filterable
           anchors.top: selectedLabel.bottom
           anchors.topMargin: Style.space(8)
           anchors.horizontalCenter: carousel.horizontalCenter
           width: root.expandedWidth
           text: root.filterText
           color: root.foreground
-          opacity: 0.85
-          style: Text.Outline
-          styleColor: Util.alpha(root.dimColor, 0.7)
           font.pixelSize: Style.font.title
-          horizontalAlignment: Text.AlignHCenter
-          elide: Text.ElideRight
+          horizontalAlignment: TextInput.AlignHCenter
+          selectByMouse: true
+          clip: true
+          onTextEdited: root.updateFilter(text)
+          Keys.priority: Keys.BeforeItem
+          Keys.onPressed: function(event) {
+            // Let the IME consume candidate navigation and commit keys first.
+            if (inputMethodComposing) return
+            // Delete edits a query, but retains theme deletion when it is empty.
+            if (event.key === Qt.Key_Delete && text) return
+            carousel.handlePickerKey(event)
+          }
         }
     }
 
